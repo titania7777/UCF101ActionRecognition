@@ -4,16 +4,13 @@ import torch.nn.functional as F
 from torchvision.models import resnet18, resnet50
 from torchvision.models.video import r2plus1d_18
 from utils import freeze_all, freeze_layer, freeze_bn, initialize_linear
-# torch.backends.cudnn.enabled = False
 
 class R2Plus1D(nn.Module):
     def __init__(self, num_classes=101):
         super(R2Plus1D, self).__init__()
 
-        # r2plus1d_18
+        # encoder(r2plus1d18)
         model = r2plus1d_18(pretrained=True)
-        
-        # encoder(freezing)
         self.encoder_freeze = nn.Sequential(
             model.stem,
             model.layer1,
@@ -22,26 +19,31 @@ class R2Plus1D(nn.Module):
         )
         self.encoder_freeze.apply(freeze_all)
 
-        # encoder(fine-tuning target)
         self.encoder_tune = nn.Sequential(
             model.layer4,
-            model.avgpool,
+            nn.AdaptiveAvgPool3d(output_size=(1, 1, 1)),
         )
-        
-        # linear classifier
+
+        # classifier
         self.classifier = nn.Linear(model.fc.in_features, num_classes)
         self.classifier.apply(initialize_linear)
 
     def forward(self, x):
-        b, d, c, h, w = x.shape
+        b, c, d, h, w = x.shape
+        
+        # encoder
         x = x.transpose(1, 2).contiguous() # b, c, d, h, w
-        x = self.encoder_freeze(x)
+        x = self.encoder_freeze(x) # b, c, c
         x = self.encoder_tune(x).squeeze()
+
+        # classifier
         x = self.classifier(x)
+        if b == 1:
+            x = x.unsqueeze(0)
         return x
 
 class Resnet(nn.Module):
-    def __init__(self, num_classes=101, hidden_size=512, num_layers=1, bidirectional=True):
+    def __init__(self, num_classes=101, hidden_size=512, num_layers=1, dropout=0.5, bidirectional=True):
         super(Resnet, self).__init__()
 
         # encoder(resnet18)
@@ -57,9 +59,17 @@ class Resnet(nn.Module):
             model.layer4,
             model.avgpool,
         )
+        self.encoder.apply(freeze_all)
         
-        # lstm
-        self.lstm = nn.LSTM(model.fc.in_features, hidden_size, num_layers, batch_first=True, bidirectional=bidirectional)
+        # gru
+        self.gru = nn.GRU(
+            input_size=model.fc.in_features, 
+            hidden_size=hidden_size, 
+            num_layers=num_layers, 
+            batch_first=True, 
+            dropout=dropout if num_layers>1 else 0, 
+            bidirectional=bidirectional
+        )
 
         # classifier
         if bidirectional:
@@ -70,7 +80,13 @@ class Resnet(nn.Module):
 
     def forward(self, x):
         b, d, c, h, w = x.shape
-        x = self.encoder(x.view(b * d, c, h, w))
-        x = self.lstm(x.view(b, d, -1))[0][:, -1]
+
+        # encoder
+        x = self.encoder(x.view(b * d, c, h, w)) # (b*d), c
+        
+        # gru
+        x = self.gru(x.view(b, d, -1))[0].mean(dim=1)
+        
+        # classifier
         x = self.classifier(x)
         return x

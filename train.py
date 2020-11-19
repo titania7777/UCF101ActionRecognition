@@ -8,16 +8,16 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.autograd import Variable
 from UCF101 import UCF101
-from utils import args_print, printer
+from utils import args_print, printer, mean_confidence_interval
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--frames-path", type=str, default="../Data/UCF101/UCF101_frames/")
-    parser.add_argument("--labels-path", type=str, default="../Data/UCF101/UCF101_labels/")
+    parser.add_argument("--frames-path", type=str, default="../UCF101FrameExtractor/UCF101_frames/")
+    parser.add_argument("--labels-path", type=str, default="../UCF101FrameExtractor/UCF101_labels/")
     parser.add_argument("--tensorboard-path", type=str, default="./tensorboard/train1/")
     parser.add_argument("--list-number", type=int, default=1)
-    parser.add_argument("--frame-size", type=int, default=224)
-    parser.add_argument("--num-epochs", type=int, default=20)
+    parser.add_argument("--frame-size", type=int, default=112)
+    parser.add_argument("--num-epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=16)
     # =============================================================
     # pad options
@@ -29,21 +29,21 @@ if __name__ == "__main__":
     parser.add_argument("--max-interval", type=int, default=7)
     parser.add_argument("--random-interval", action="store_true")
     # =============================================================
-    parser.add_argument("--sequence-length", type=int, default=15)
+    parser.add_argument("--sequence-length", type=int, default=30)
     parser.add_argument("--model", type=str, default="resnet")
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--hidden-size", type=int, default=512)
     parser.add_argument("--bidirectional", action="store_true")
     parser.add_argument("--learning-rate", type=float, default=5e-4)
     parser.add_argument("--scheduler-step-size", type=int, default=10)
-    parser.add_argument("--scheduler-gamma", type=float, default=0.5)
+    parser.add_argument("--scheduler-gamma", type=float, default=0.9)
     args = parser.parse_args()
-
-    # write tensorboard
-    writer = SummaryWriter(args.tensorboard_path)
 
     # print args and save
     args_print(args)
+
+    # write tensorboard
+    writer = SummaryWriter(args.tensorboard_path)
     
     assert args.model in ["resnet", "r2plus1d"], "'{}' model is invalid !!".format(args.model)
 
@@ -100,6 +100,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+
     # optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=5e-4)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma)
@@ -117,7 +118,6 @@ if __name__ == "__main__":
             datas, labels = datas.to(device), labels.to(device)
             
             pred = model(datas)
-
             # calculate loss
             loss = F.cross_entropy(pred, labels)
             train_loss.append(loss.item())
@@ -160,7 +160,7 @@ if __name__ == "__main__":
             test_acc.append(acc)
             total_acc = sum(test_acc) / len(test_acc)
             
-            printer("test", e, args.num_epochs, i+1, len(test_loader), loss, total_loss, acc * 100, total_acc * 100)
+            printer("test", e, args.num_epochs, i+1, len(test_loader), loss, total_loss, acc*100, total_acc*100)
 
             # tensorboard
             writer.add_scalar("Loss/test", loss, n_iter_test)
@@ -170,6 +170,7 @@ if __name__ == "__main__":
         # not saving
         if total_acc > best:
             best = total_acc
-        print(" Best: {:.2f}%".format(best * 100))
+        m, h = mean_confidence_interval(test_acc)
+        print("Best: {:.2f}% ({:.2f}+-{:.2f}) ".format(best*100, m*100, h))
 
         lr_scheduler.step()
